@@ -5,27 +5,17 @@
 ;;; C-c RET h d [com.cemerick/url "0.1.1"]
 ;;; REVIEW: Non greedy patterns +? 
 #_(def ^:private github-url-pattern #"\"(https?://github.com/.+?)\"")
-(def ^:private twitter-url-pattern #"\"(https?://twitter.com/.+?)\"")
+#_(def ^:private twitter-url-pattern #"\"(https?://twitter.com/.+?)\"")
 ;;; REVIEW: Lookahead patterns
 (def ^:private github-url-pattern #"https?://github.com/[^\"\s]+(?=\")")
+(def ^:private twitter-url-pattern #"https?://twitter.com/[^\"\s]+(?=\")")
 
 (defn- scrape-page
-  "Gets the Twitter and Github urls from a url. "
-  [url]
-  (try 
-    (let [html (slurp url)
-          github-url (->> html
-                          (re-find github-url-pattern)
-                          next
-                          first)
-          twitter-url (->> html
-                           (re-find twitter-url-pattern)
-                           next
-                           first)]
-      (hash-map :github-url github-url 
-                :twitter-url twitter-url
-                :url url))
-    (catch Exception e (hash-map :error (str (.getMessage e))))))
+  "Gets the Twitter and Github urls from `html` content. "
+  [html]
+  (when html 
+    (hash-map :github-url (re-find github-url-pattern html) 
+              :twitter-url (re-find twitter-url-pattern html))))
 
 (defn- absolute?
   "Logical true if `url` is absolute."
@@ -47,34 +37,42 @@
     (str (url/url base-url current))))
 
 (defn- crawl-others
-  "Gets all the href urls on a page."
-  [url]
-  (try
+  "Gets all the a's href urls on `html` content."
+  [html url]
+  (when html
     (let [domain-pattern (re-pattern (escape-dots (:host (url/url url))))]
-      (->> url
-           slurp
-           (re-seq #"href=\"([^\"]+)\"")
+      (->> html
+           (re-seq #"a\s+href=\"([^\"]+)\"")
            (map last)
            (map (partial make-absolute url))
-           (filter #(re-find domain-pattern %))))
-    (catch Exception e (prn (.getMessage e)))))
+           (filter #(re-find domain-pattern %))))))
 
 (defn- parse-site
   "Goes through a site looking for github & twitter urls."
   [url]
   (loop [todo #{url} done #{} result {}]
-    (if (empty? todo)
-      result
-      (recur (->> (conj todo (crawl-others url))
-                 (remove done)) ;; NICE: Uses sets as preds! Genius!
-             (conj done url)
-             (merge result (scrape-page url))))))
+    (if (or
+         (and (:github-url result) (:twitter-url result))
+         (empty? todo))
+      (assoc result :url url)
+      (let [url (first todo)
+            html (try
+                   (slurp url)
+                   (catch Exception e (prn (.getMessage e))))
+            updated-done (conj done url)]
+        (recur (->> (into todo (crawl-others html url))
+                    (remove updated-done)) ;; NICE: Uses sets as preds! Genius! 
+               updated-done
+               (merge result (scrape-page html)))))))
 
 (defn -main
-  "I don't do a whole lot ... yet."
-  [& args]
-  (->> "resources/urls"
+  "Crawls candidates profiles looking for github and/or twitter urls."
+  [& _]
+  (-> "resources/urls"
       slurp
       clojure.string/split-lines
-      (map parse-site)
+      (as-> urls (sequence (comp
+                            #_(take 20)
+                            (map parse-site))
+                           urls))
       clojure.pprint/pprint))
