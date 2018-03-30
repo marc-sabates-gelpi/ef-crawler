@@ -9,6 +9,7 @@
 ;;; REVIEW: Lookahead patterns
 (def ^:private github-url-pattern #"https?://github.com/[^\"\s]+(?=\")")
 (def ^:private twitter-url-pattern #"https?://twitter.com/[^\"\s]+(?=\")")
+(def ^:private error-message "[Error] %s\n")
 
 (defn- scrape-page
   "Gets the Twitter and Github urls from `html` content. "
@@ -16,6 +17,16 @@
   (when html 
     (hash-map :github-url (re-find github-url-pattern html) 
               :twitter-url (re-find twitter-url-pattern html))))
+
+(defn- sanitise-url
+  "Returns the `url` without anchor and empty path."
+  [url]
+  (-> url
+      (url/url)
+      (dissoc :anchor)
+      (update :path #(when (not= "/" %) %))
+      (url/map->URL)
+      str))
 
 (defn- absolute?
   "Logical true if `url` is absolute."
@@ -50,20 +61,25 @@
 (defn- parse-site
   "Goes through a site looking for github & twitter urls."
   [url]
-  (loop [todo #{url} done #{} result {}]
+  (loop [todo #{(sanitise-url url)} done #{} result {}]
     (if (or
          (and (:github-url result) (:twitter-url result))
          (empty? todo))
       (assoc result :url url)
-      (let [url (first todo)
+      (let [current (first todo)
             html (try
-                   (slurp url)
-                   (catch Exception e (prn (.getMessage e))))
-            updated-done (conj done url)]
-        (recur (->> (into todo (crawl-others html url))
+                   (slurp current)
+                   (catch Exception e (printf error-message (.getMessage e))))
+            updated-done (conj done current)]
+        (recur (->> current
+                    (crawl-others html)
+                    (map sanitise-url)
+                    (into todo)
                     (remove updated-done)) ;; NICE: Uses sets as preds! Genius! 
                updated-done
-               (merge result (scrape-page html)))))))
+               (->> html
+                    scrape-page
+                    (merge result)))))))
 
 (defn -main
   "Crawls candidates profiles looking for github and/or twitter urls."
@@ -73,6 +89,8 @@
       clojure.string/split-lines
       (as-> urls (sequence (comp
                             #_(take 20)
-                            (map parse-site))
-                           urls))
-      clojure.pprint/pprint))
+                            (map parse-site)
+                            (map (fn [res]
+                                   (clojure.pprint/pprint res)
+                                   res)))
+                           urls))))
